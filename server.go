@@ -103,7 +103,9 @@ func (m *FramebufferUpdate) Marshal() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		buf.Write(bytes)
+		if err := buf.Write(bytes); err != nil {
+			return nil, err
+		}
 	}
 
 	return buf.Bytes(), nil
@@ -263,15 +265,26 @@ func (*SetColorMapEntries) Read(c *ClientConn) (ServerMessage, error) {
 		return nil, err
 	}
 
+	if numColors > 256 {
+		return nil, NewVNCError(fmt.Sprintf("number-of-colors %d exceeds color map size", numColors))
+	}
+
 	result.Colors = make([]Color, numColors)
 	for i := uint16(0); i < numColors; i++ {
-		color := &result.Colors[i]
-		if err := c.receive(&color); err != nil {
+		idx := uint32(result.FirstColor) + uint32(i)
+		if idx > 255 {
+			return nil, NewVNCError(fmt.Sprintf("color map index %d out of range", idx))
+		}
+
+		// Color map entries on the wire are three U16 values (red, green, blue).
+		var rgb struct{ R, G, B uint16 }
+		if err := c.receive(&rgb); err != nil {
 			return nil, err
 		}
 
-		// Update the connection's color map
-		c.colorMap[result.FirstColor+i] = *color
+		color := Color{R: rgb.R, G: rgb.G, B: rgb.B}
+		result.Colors[i] = color
+		c.colorMap[idx] = color
 	}
 
 	return &result, nil
@@ -421,6 +434,9 @@ func (*ServerCutText) Read(c *ClientConn) (ServerMessage, error) {
 	var textLength uint32
 	if err := c.receive(&textLength); err != nil {
 		return nil, err
+	}
+	if textLength > maxReasonLen {
+		return nil, NewVNCError(fmt.Sprintf("ServerCutText length %d exceeds limit of %d", textLength, maxReasonLen))
 	}
 
 	textBytes := make([]uint8, textLength)

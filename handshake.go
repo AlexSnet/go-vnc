@@ -32,8 +32,22 @@ const (
 	// Client ProtocolVersions.
 	PROTO_VERS_UNSUP = "UNSUPPORTED"
 	PROTO_VERS_3_3   = "RFB 003.003\n"
+	PROTO_VERS_3_7   = "RFB 003.007\n"
 	PROTO_VERS_3_8   = "RFB 003.008\n"
 )
+
+func protoVersionRank(pv string) int {
+	switch pv {
+	case PROTO_VERS_3_3:
+		return 33
+	case PROTO_VERS_3_7:
+		return 37
+	case PROTO_VERS_3_8:
+		return 38
+	default:
+		return 0
+	}
+}
 
 // protocolVersionHandshake implements §7.1.1 ProtocolVersion Handshake.
 func (c *ClientConn) protocolVersionHandshake(ctx context.Context) error {
@@ -55,6 +69,8 @@ func (c *ClientConn) protocolVersionHandshake(ctx context.Context) error {
 	if major == 3 {
 		if minor >= 8 {
 			pv = PROTO_VERS_3_8
+		} else if minor >= 7 {
+			pv = PROTO_VERS_3_7
 		} else if minor >= 3 {
 			pv = PROTO_VERS_3_3
 		}
@@ -63,12 +79,20 @@ func (c *ClientConn) protocolVersionHandshake(ctx context.Context) error {
 		return NewVNCError(fmt.Sprintf("ProtocolVersion handshake failed; unsupported version '%v'", string(protocolVersion[:])))
 	}
 
+	// Cap the negotiated version at the caller-requested maximum. Never
+	// upgrade past what the server advertised.
 	if mpv := ctx.Value("vnc_max_proto_version"); mpv != nil && mpv != "" {
+		max := PROTO_VERS_UNSUP
 		switch mpv {
 		case "3.3":
-			pv = PROTO_VERS_3_3
+			max = PROTO_VERS_3_3
+		case "3.7":
+			max = PROTO_VERS_3_7
 		case "3.8":
-			pv = PROTO_VERS_3_8
+			max = PROTO_VERS_3_8
+		}
+		if protoVersionRank(max) > 0 && protoVersionRank(max) < protoVersionRank(pv) {
+			pv = max
 		}
 	}
 
@@ -92,7 +116,7 @@ func (c *ClientConn) securityHandshake() error {
 		if err := c.securityHandshake33(); err != nil {
 			return err
 		}
-	case PROTO_VERS_3_8:
+	case PROTO_VERS_3_7, PROTO_VERS_3_8:
 		if err := c.securityHandshake38(); err != nil {
 			return err
 		}
@@ -161,7 +185,7 @@ func (c *ClientConn) securityHandshake38() error {
 FindAuth:
 	for _, securityType := range securityTypes {
 		for _, a := range c.config.Auth {
-			if a.SecurityType() == securityType {
+			if a != nil && a.SecurityType() == securityType {
 				// We use the first matching supported authentication.
 				auth = a
 				break FindAuth
@@ -187,7 +211,9 @@ FindAuth:
 // securityResultHandshake implements §7.1.3 SecurityResult Handshake.
 func (c *ClientConn) securityResultHandshake() error {
 
-	if c.config.secType == secTypeNone {
+	// RFB 3.3 omits SecurityResult only for security type None.
+	// RFB 3.7 and 3.8 always send it, including for None.
+	if c.config.secType == secTypeNone && c.protocolVersion == PROTO_VERS_3_3 {
 		return nil
 	}
 
@@ -198,11 +224,16 @@ func (c *ClientConn) securityResultHandshake() error {
 	switch securityResult {
 	case 0:
 	case 1:
-		reason, err := c.readErrorReason()
-		if err != nil {
-			return err
+		// RFB 3.8+ includes a reason string after a failed SecurityResult.
+		// RFB 3.7 closes the connection without a reason.
+		if c.protocolVersion == PROTO_VERS_3_8 {
+			reason, err := c.readErrorReason()
+			if err != nil {
+				return err
+			}
+			return NewVNCError(fmt.Sprintf("SecurityResult handshake failed: %s", reason))
 		}
-		return NewVNCError(fmt.Sprintf("SecurityResult handshake failed: %s", reason))
+		return NewVNCError("SecurityResult handshake failed")
 	default:
 		return NewVNCError(fmt.Sprintf("Invalid SecurityResult status: %v", securityResult))
 	}
@@ -215,6 +246,9 @@ func (c *ClientConn) readErrorReason() (string, error) {
 	var reasonLen uint32
 	if err := c.receive(&reasonLen); err != nil {
 		return "", err
+	}
+	if reasonLen > maxReasonLen {
+		return "", NewVNCError(fmt.Sprintf("reason-length %d exceeds limit of %d", reasonLen, maxReasonLen))
 	}
 
 	reason := make([]uint8, reasonLen)

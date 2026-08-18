@@ -67,6 +67,7 @@ func TestProtocolVersionHandshake(t *testing.T) {
 		// Supported versions.
 		{"RFB 003.003\n", "RFB 003.003\n", true},
 		{"RFB 003.006\n", "RFB 003.003\n", true},
+		{"RFB 003.007\n", "RFB 003.007\n", true},
 		{"RFB 003.008\n", "RFB 003.008\n", true},
 		{"RFB 003.389\n", "RFB 003.008\n", true},
 		// Unsupported versions.
@@ -116,11 +117,6 @@ func TestProtocolVersionHandshake(t *testing.T) {
 func writeVNCAuthChallenge(w io.Writer) error {
 	var ch vncAuthChallenge = vncAuthChallenge{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 	return binary.Write(w, binary.BigEndian, ch)
-}
-
-func readVNCAuthResponse(r io.Reader) error {
-	var ch vncAuthChallenge
-	return binary.Read(r, binary.BigEndian, &ch)
 }
 
 func TestSecurityHandshake33(t *testing.T) {
@@ -194,7 +190,8 @@ func TestSecurityHandshake33(t *testing.T) {
 
 		// Validate client response.
 		if tt.secType == uint32(secTypeVNCAuth) {
-			if err := readVNCAuthResponse(conn.Conn); err != nil {
+			var ch vncAuthChallenge
+			if err := conn.receive(&ch); err != nil {
 				t.Fatalf("%v: error reading VNCAuth response: %v", i, err)
 			}
 		}
@@ -310,7 +307,8 @@ func TestSecurityHandshake38(t *testing.T) {
 			t.Errorf("%d: secType not stored; got = %v, want = %v", i, got, want)
 		}
 		if tt.secType == secTypeVNCAuth {
-			if err := readVNCAuthResponse(conn.Conn); err != nil {
+			var ch vncAuthChallenge
+			if err := conn.receive(&ch); err != nil {
 				t.Fatalf("%d: error reading VNCAuth response: %s", i, err)
 			}
 		}
@@ -326,45 +324,95 @@ func TestSecurityHandshake38(t *testing.T) {
 
 func TestSecurityResultHandshake(t *testing.T) {
 	tests := []struct {
+		proto  string
+		sec    uint8
 		result uint32
 		ok     bool
 		reason string
+		errstr string
 	}{
-		{0, true, ""},
-		{1, false, "SecurityResult error"},
+		{PROTO_VERS_3_8, secTypeVNCAuth, 0, true, "", ""},
+		{PROTO_VERS_3_8, secTypeVNCAuth, 1, false, "SecurityResult error", "SecurityResult handshake failed: SecurityResult error"},
+		{PROTO_VERS_3_8, secTypeNone, 0, true, "", ""},
+		{PROTO_VERS_3_3, secTypeNone, 0, true, "", ""},
+		{PROTO_VERS_3_7, secTypeVNCAuth, 1, false, "", "SecurityResult handshake failed"},
 	}
 
 	mockConn := &MockConn{}
 	conn := NewClientConn(mockConn, &ClientConfig{})
 
-	for _, tt := range tests {
+	for i, tt := range tests {
 		mockConn.Reset()
+		conn.protocolVersion = tt.proto
+		conn.config.secType = tt.sec
 
-		// Send server message.
-		if err := conn.send(tt.result); err != nil {
-			t.Fatal(err)
-		}
-		if !tt.ok {
-			if err := conn.send(uint32(len(tt.reason))); err != nil {
+		// RFB 3.3 + None does not send SecurityResult at all.
+		if !(tt.proto == PROTO_VERS_3_3 && tt.sec == secTypeNone) {
+			if err := conn.send(tt.result); err != nil {
 				t.Fatal(err)
 			}
-			if err := conn.send([]byte(tt.reason)); err != nil {
-				t.Fatal(err)
+			if tt.reason != "" {
+				if err := conn.send(uint32(len(tt.reason))); err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.send([]byte(tt.reason)); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 
-		// Process SecurityResult message.
 		err := conn.securityResultHandshake()
 		if err == nil && !tt.ok {
-			t.Fatalf("expected error for result %v", tt.result)
+			t.Fatalf("%d: expected error for result %v", i, tt.result)
+		}
+		if err != nil && tt.ok {
+			t.Fatalf("%d: unexpected error: %v", i, err)
 		}
 		if err != nil {
 			if verr, ok := err.(*VNCError); !ok {
-				t.Errorf("securityResultHandshake() unexpected %v error: %v", reflect.TypeOf(err), verr)
+				t.Errorf("%d: unexpected %v error: %v", i, reflect.TypeOf(err), verr)
 			}
-			if got, want := err.Error(), "SecurityResult handshake failed: "+tt.reason; got != want {
-				t.Errorf("incorrect reason")
+			if got, want := err.Error(), tt.errstr; got != want {
+				t.Errorf("%d: incorrect error; got = %q, want = %q", i, got, want)
 			}
 		}
+	}
+}
+
+func TestProtocolVersionHandshakeMaxVersion(t *testing.T) {
+	mockConn := &MockConn{}
+	conn := NewClientConn(mockConn, &ClientConfig{})
+
+	// Server offers 3.8, caller caps at 3.3.
+	mockConn.Reset()
+	if err := conn.send([]byte(PROTO_VERS_3_8)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), "vnc_max_proto_version", "3.3")
+	if err := conn.protocolVersionHandshake(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var client [pvLen]byte
+	if err := conn.receive(&client); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(client[:]), PROTO_VERS_3_3; got != want {
+		t.Errorf("capped version; got = %q, want = %q", got, want)
+	}
+
+	// Server offers 3.3; max 3.8 must not upgrade past the server.
+	mockConn.Reset()
+	if err := conn.send([]byte(PROTO_VERS_3_3)); err != nil {
+		t.Fatal(err)
+	}
+	ctx = context.WithValue(context.Background(), "vnc_max_proto_version", "3.8")
+	if err := conn.protocolVersionHandshake(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := conn.receive(&client); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(client[:]), PROTO_VERS_3_3; got != want {
+		t.Errorf("must not upgrade; got = %q, want = %q", got, want)
 	}
 }

@@ -71,6 +71,16 @@ func TestLowMinorVersion(t *testing.T) {
 	}
 }
 
+func TestConnectInvalidContext(t *testing.T) {
+	mockConn := &MockConn{}
+	cfg := NewClientConfig("pw")
+	ctx := context.WithValue(context.Background(), "vnc_max_proto_version", "9.9")
+	_, err := Connect(ctx, mockConn, cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid max protocol version")
+	}
+}
+
 func TestClientConn(t *testing.T) {
 	conn := &ClientConn{}
 
@@ -91,6 +101,7 @@ func TestReceiveN(t *testing.T) {
 	}{
 		{[]uint8{10, 11, 12}},
 		{[]int32{20, 21, 22}},
+		{[]uint32{40, 41, 42}},
 		{bytes.NewBuffer([]byte{30, 31, 32})},
 	}
 
@@ -131,6 +142,18 @@ func TestReceiveN(t *testing.T) {
 			}
 			if got, want := len(data), n; got != want {
 				t.Errorf("incorrect amount of data received; got = %v, want = %v", got, want)
+			}
+		case []uint32:
+			var data []uint32
+			n := len(tt.data.([]uint32))
+			if err := conn.receiveN(&data, n); err != nil {
+				t.Errorf("error receiving data: %v", err)
+			}
+			if got, want := len(data), n; got != want {
+				t.Errorf("incorrect amount of data received; got = %v, want = %v", got, want)
+			}
+			if got, want := data, tt.data.([]uint32); !reflect.DeepEqual(got, want) {
+				t.Errorf("incorrect data received; got = %v, want = %v", got, want)
 			}
 		case *bytes.Buffer:
 			var data bytes.Buffer

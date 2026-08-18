@@ -26,8 +26,9 @@ func TestPixelFormat_Marshal(t *testing.T) {
 		//
 		{PixelFormat{BPP: 8, Depth: 8, BigEndian: RFBTrue, TrueColor: RFBFalse},
 			[]uint8{8, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, true},
-		{PixelFormat{BPP: 8, Depth: 16, BigEndian: RFBTrue, TrueColor: RFBFalse},
-			[]uint8{8, 16, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, true},
+		{PixelFormat{BPP: 32, Depth: 24, BigEndian: RFBTrue, TrueColor: RFBTrue,
+			RedMax: 255, GreenMax: 255, BlueMax: 255, RedShift: 16, GreenShift: 8, BlueShift: 0},
+			[]uint8{32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0}, true},
 		{NewPixelFormat(16),
 			[]uint8{16, 16, 1, 1, 255, 255, 255, 255, 255, 255, 0, 4, 8, 0, 0, 0}, true},
 		//
@@ -39,8 +40,8 @@ func TestPixelFormat_Marshal(t *testing.T) {
 		// Depth invalid
 		{PixelFormat{BPP: 8, Depth: 1, BigEndian: RFBTrue, TrueColor: RFBFalse},
 			[]uint8{}, false},
-		// BPP > Depth
-		{PixelFormat{BPP: 16, Depth: 8, BigEndian: RFBTrue, TrueColor: RFBFalse},
+		// Depth > BPP (RFC 6143 requires depth <= bits-per-pixel)
+		{PixelFormat{BPP: 8, Depth: 16, BigEndian: RFBTrue, TrueColor: RFBFalse},
 			[]uint8{}, false},
 	}
 
@@ -76,12 +77,12 @@ func TestPixelFormat_Unmarshal(t *testing.T) {
 		{[]uint8{8, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 			PixelFormat{BPP: 8, Depth: 8, BigEndian: RFBTrue, TrueColor: RFBFalse},
 			true},
-		{[]uint8{8, 16, 1, 1, 255, 255, 255, 255, 255, 255, 0, 4, 8, 0, 0, 0},
+		{[]uint8{32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0},
 			PixelFormat{
-				BPP: 8, Depth: 16,
+				BPP: 32, Depth: 24,
 				BigEndian: RFBTrue, TrueColor: RFBTrue,
-				RedMax: 65535, GreenMax: 65535, BlueMax: 65535,
-				RedShift: 0, GreenShift: 4, BlueShift: 8},
+				RedMax: 255, GreenMax: 255, BlueMax: 255,
+				RedShift: 16, GreenShift: 8, BlueShift: 0},
 			true},
 		{[]uint8{16, 16, 1, 1, 255, 255, 255, 255, 255, 255, 0, 4, 8, 0, 0, 0},
 			NewPixelFormat(16), true},

@@ -30,6 +30,10 @@ func Errorf(format string, a ...interface{}) error {
 	}
 }
 
+// maxReasonLen is an upper bound for variable-length strings sent by a server
+// (error reasons, desktop names, clipboard text).
+const maxReasonLen = 1 << 20
+
 var settleDuration = 25 * time.Millisecond
 
 // Settle returns the UI settle duration.
@@ -77,7 +81,7 @@ type Marshaler interface {
 	Marshal() ([]byte, error)
 }
 
-// Unarshaler is the interface satisfied for unmarshaling messages.
+// Unmarshaler is the interface satisfied for unmarshaling messages.
 type Unmarshaler interface {
 	// Unmarshal parses a wire format message into a message.
 	Unmarshal(data []byte) error

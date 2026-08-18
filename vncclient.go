@@ -18,14 +18,15 @@ import (
 	"github.com/alexsnet/go-vnc/messages"
 )
 
-type ReadProxy struct {
-	or io.Reader
+// bufConn reads leftover bytes from a bufio.Reader, then from the
+// underlying connection. Writes go directly to the connection.
+type bufConn struct {
+	net.Conn
+	r io.Reader
 }
 
-func (rp *ReadProxy) Read(p []byte) (n int, err error) {
-	n, err = rp.or.Read(p)
-	fmt.Printf("Read: %v\n", p)
-	return
+func (c *bufConn) Read(p []byte) (int, error) {
+	return c.r.Read(p)
 }
 
 // Connect negotiates a connection to a VNC server.
@@ -33,7 +34,8 @@ func Connect(ctx context.Context, c net.Conn, cfg *ClientConfig) (*ClientConn, e
 	conn := NewClientConn(c, cfg)
 
 	if err := conn.processContext(ctx); err != nil {
-		log.Fatalf("invalid context; %s", err)
+		conn.Close()
+		return nil, err
 	}
 
 	if err := conn.protocolVersionHandshake(ctx); err != nil {
@@ -167,9 +169,7 @@ type ClientConn struct {
 }
 
 func NewClientConn(c net.Conn, cfg *ClientConfig) *ClientConn {
-	return &ClientConn{
-		Conn:           c,
-		bufr:           bufio.NewReaderSize(c, 1024),
+	conn := &ClientConn{
 		connTerminated: false,
 		config:         cfg,
 		log:            cfg.Logger,
@@ -180,6 +180,33 @@ func NewClientConn(c net.Conn, cfg *ClientConfig) *ClientConn {
 			"bytes-sent":     &metrics.Gauge{},
 		},
 	}
+	conn.setConn(c)
+	return conn
+}
+
+// setConn updates the underlying connection and rebuilds the buffered reader.
+func (c *ClientConn) setConn(conn net.Conn) {
+	c.Conn = conn
+	c.bufr = bufio.NewReaderSize(conn, 1024)
+}
+
+// readerConn returns a net.Conn that drains any bytes already buffered
+// in bufr before reading from the underlying connection. Use this when
+// handing the connection to another protocol (for example TLS) so that
+// peeked/prefetched bytes are not lost.
+func (c *ClientConn) readerConn() net.Conn {
+	if c.bufr != nil && c.bufr.Buffered() > 0 {
+		return &bufConn{Conn: c.Conn, r: c.bufr}
+	}
+	return c.Conn
+}
+
+func (c *ClientConn) logf(format string, args ...interface{}) {
+	if c.log != nil {
+		c.log.Printf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // Close a connection to a VNC server.
@@ -249,9 +276,9 @@ func (c *ClientConn) ListenAndHandle() error {
 		var messageType messages.ServerMessage
 		if err := c.receive(&messageType); err != nil {
 			if !c.connTerminated {
-				log.Print("error: reading from server")
+				c.logf("error: reading from server: %v", err)
 			}
-			break
+			return err
 		}
 		if c.log != nil {
 			c.log.Printf("message-type: %s", messageType)
@@ -259,27 +286,23 @@ func (c *ClientConn) ListenAndHandle() error {
 
 		msg, ok := serverMessages[messageType]
 		if !ok {
-			// Unsupported message type! Bad!
-			log.Printf("error unsupported message-type: %v", messageType)
-			break
+			err := NewVNCError(fmt.Sprintf("unsupported message-type: %v", messageType))
+			c.logf("%v", err)
+			return err
 		}
 
 		parsedMsg, err := msg.Read(c)
 		if err != nil {
-			log.Printf("error parsing message; %v", err)
-			break
+			c.logf("error parsing message; %v", err)
+			return err
 		}
 
 		if c.config.ServerMessageCh == nil {
-			log.Print("ignoring message; no server message channel")
 			continue
 		}
 
 		c.config.ServerMessageCh <- parsedMsg
 	}
-
-	log.Print("ListenAndHandle finished")
-	return nil
 }
 
 // receive a packet from the network.
@@ -304,31 +327,39 @@ func (c *ClientConn) receiveN(data interface{}, n int) error {
 			if err := binary.Read(c.bufr, binary.BigEndian, &v); err != nil {
 				return err
 			}
-			slice := data
-			*slice = append(*slice, v)
+			*data = append(*data, v)
 		}
+		c.metrics["bytes-received"].Adjust(int64(n))
 	case *[]int32:
 		var v int32
 		for i := 0; i < n; i++ {
 			if err := binary.Read(c.bufr, binary.BigEndian, &v); err != nil {
 				return err
 			}
-			slice := data
-			*slice = append(*slice, v)
+			*data = append(*data, v)
 		}
+		c.metrics["bytes-received"].Adjust(int64(n) * 4)
+	case *[]uint32:
+		var v uint32
+		for i := 0; i < n; i++ {
+			if err := binary.Read(c.bufr, binary.BigEndian, &v); err != nil {
+				return err
+			}
+			*data = append(*data, v)
+		}
+		c.metrics["bytes-received"].Adjust(int64(n) * 4)
 	case *bytes.Buffer:
 		var v byte
 		for i := 0; i < n; i++ {
 			if err := binary.Read(c.bufr, binary.BigEndian, &v); err != nil {
 				return err
 			}
-			buf := data
-			buf.WriteByte(v)
+			data.WriteByte(v)
 		}
+		c.metrics["bytes-received"].Adjust(int64(n))
 	default:
 		return NewVNCError(fmt.Sprintf("unrecognized data type %v", reflect.TypeOf(data)))
 	}
-	c.metrics["bytes-received"].Adjust(int64(binary.Size(data)))
 	return nil
 }
 
@@ -370,8 +401,8 @@ func (c *ClientConn) send(data interface{}) error {
 
 func (c *ClientConn) processContext(ctx context.Context) error {
 	if mpv := ctx.Value("vnc_max_proto_version"); mpv != nil && mpv != "" {
-		log.Printf("vnc_max_proto_version: %v", mpv)
-		vers := []string{"3.3", "3.8"}
+		c.logf("vnc_max_proto_version: %v", mpv)
+		vers := []string{"3.3", "3.7", "3.8"}
 		valid := false
 		for _, v := range vers {
 			if mpv == v {
@@ -380,7 +411,7 @@ func (c *ClientConn) processContext(ctx context.Context) error {
 			}
 		}
 		if !valid {
-			return fmt.Errorf("Invalid max protocol version %v; supported versions are %v", mpv, vers)
+			return fmt.Errorf("invalid max protocol version %v; supported versions are %v", mpv, vers)
 		}
 	}
 

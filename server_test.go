@@ -217,8 +217,91 @@ func TestColor_Unmarshal(t *testing.T) {
 	}
 }
 
-func TestSetColorMapEntries(t *testing.T) {}
+func TestSetColorMapEntries(t *testing.T) {
+	mockConn := &MockConn{}
+	conn := NewClientConn(mockConn, &ClientConfig{})
 
-func TestBell(t *testing.T) {}
+	// padding + first-color + number-of-colors + 2 RGB triples
+	if err := conn.send([1]byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send(uint16(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send(uint16(2)); err != nil {
+		t.Fatal(err)
+	}
+	colors := []Color{
+		{R: 1, G: 2, B: 3},
+		{R: 4, G: 5, B: 6},
+	}
+	for _, c := range colors {
+		if err := conn.send(c.R); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.send(c.G); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.send(c.B); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-func TestServerCutText(t *testing.T) {}
+	msg := &SetColorMapEntries{}
+	parsed, err := msg.Read(conn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := parsed.(*SetColorMapEntries)
+	if got.FirstColor != 2 {
+		t.Errorf("FirstColor: got = %d, want = 2", got.FirstColor)
+	}
+	if len(got.Colors) != 2 {
+		t.Fatalf("Colors: got = %d, want = 2", len(got.Colors))
+	}
+	for i, want := range colors {
+		if got.Colors[i].R != want.R || got.Colors[i].G != want.G || got.Colors[i].B != want.B {
+			t.Errorf("color[%d]: got = %+v, want = %+v", i, got.Colors[i], want)
+		}
+		if conn.colorMap[2+uint16(i)] != got.Colors[i] {
+			t.Errorf("colorMap not updated at index %d", 2+i)
+		}
+	}
+}
+
+func TestBell(t *testing.T) {
+	mockConn := &MockConn{}
+	conn := NewClientConn(mockConn, &ClientConfig{})
+	parsed, err := (&Bell{}).Read(conn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := parsed.(*Bell); !ok {
+		t.Fatalf("unexpected type %T", parsed)
+	}
+}
+
+func TestServerCutText(t *testing.T) {
+	mockConn := &MockConn{}
+	conn := NewClientConn(mockConn, &ClientConfig{})
+
+	text := "hello"
+	if err := conn.send([1]byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send(uint32(len(text))); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send([]byte(text)); err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := (&ServerCutText{}).Read(conn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := parsed.(*ServerCutText)
+	if got.Text != text {
+		t.Errorf("Text: got = %q, want = %q", got.Text, text)
+	}
+}
