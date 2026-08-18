@@ -63,13 +63,16 @@ func (pf PixelFormat) Marshal() ([]byte, error) {
 		return nil, NewVNCError(fmt.Sprintf("Invalid BPP value %v; must be 8, 16, or 32.", pf.BPP))
 	}
 
-	if pf.Depth < pf.BPP {
-		return nil, NewVNCError(fmt.Sprintf("Invalid Depth value %v; cannot be < BPP", pf.Depth))
+	// RFC 6143 §7.4: depth is the number of useful bits in the pixel value
+	// and MUST be less than or equal to bits-per-pixel. 24 is the common
+	// depth for 32-bit true-color formats.
+	if pf.Depth > pf.BPP {
+		return nil, NewVNCError(fmt.Sprintf("Invalid Depth value %v; cannot be > BPP", pf.Depth))
 	}
 	switch pf.Depth {
-	case 8, 16, 32:
+	case 8, 16, 24, 32:
 	default:
-		return nil, NewVNCError(fmt.Sprintf("Invalid Depth value %v; must be 8, 16, or 32.", pf.Depth))
+		return nil, NewVNCError(fmt.Sprintf("Invalid Depth value %v; must be 8, 16, 24, or 32.", pf.Depth))
 	}
 
 	// Create the slice of bytes

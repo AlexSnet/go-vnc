@@ -15,24 +15,23 @@ func (c *ClientConn) clientInit() error {
 	if err := c.send(sharedFlag); err != nil {
 		return err
 	}
-
-	// TODO(kward)20170226): VENUE responds with some sort of shared flag
-	// response, which includes the VENUE name and IPs. Handle this?
-	{
-		dat, err := c.bufr.Peek(4)
-		if err != nil {
-			return err
-		}
-		x := binary.BigEndian.Uint32(dat)
-		// c.receive(&x)
-		if x != 0 {
-			return nil
-		}
-		if _, err := c.bufr.Discard(4); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+// discardOptionalVenuePadding skips the 4 zero bytes that some Avid VENUE
+// servers send after ClientInit, before ServerInit. The peek is performed
+// here (on the server stream) so ClientInit does not try to read from the
+// connection after writing.
+func (c *ClientConn) discardOptionalVenuePadding() error {
+	dat, err := c.bufr.Peek(4)
+	if err != nil {
+		return err
+	}
+	if binary.BigEndian.Uint32(dat) != 0 {
+		return nil
+	}
+	_, err = c.bufr.Discard(4)
+	return err
 }
 
 // ServerInit message sent after server receives a ClientInit message.
@@ -70,8 +69,12 @@ func (m *ServerInit) Unmarshal(data []byte) error {
 
 // serverInit implements §7.3.2 ServerInit.
 func (c *ClientConn) serverInit() error {
+	if err := c.discardOptionalVenuePadding(); err != nil {
+		return Errorf("failure reading ServerInit message; %v", err)
+	}
+
 	var msg ServerInit
-	if err := msg.Read(c.Conn); err != nil {
+	if err := c.receive(&msg); err != nil {
 		return Errorf("failure reading ServerInit message; %v", err)
 	}
 
@@ -79,6 +82,9 @@ func (c *ClientConn) serverInit() error {
 	c.setFramebufferHeight(msg.FBHeight)
 	c.pixelFormat = msg.PixelFormat
 
+	if msg.NameLength > maxReasonLen {
+		return NewVNCError("desktop name is too long")
+	}
 	name := make([]uint8, msg.NameLength)
 	if err := c.receive(&name); err != nil {
 		return err

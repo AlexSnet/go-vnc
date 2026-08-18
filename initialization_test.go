@@ -128,3 +128,46 @@ func TestServerInit(t *testing.T) {
 		}
 	}
 }
+
+func TestServerInit_VenuePadding(t *testing.T) {
+	mockConn := &MockConn{}
+	conn := NewClientConn(mockConn, &ClientConfig{})
+
+	if err := conn.send(uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send(uint16(320)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send(uint16(240)); err != nil {
+		t.Fatal(err)
+	}
+	pf := NewPixelFormat(16)
+	pfBytes, err := pf.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send(pfBytes); err != nil {
+		t.Fatal(err)
+	}
+	name := "venue"
+	if err := conn.send(uint32(len(name))); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.send([]byte(name)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := conn.serverInit(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := conn.FramebufferWidth(), uint16(320); got != want {
+		t.Errorf("FramebufferWidth: got = %v, want = %v", got, want)
+	}
+	if got, want := conn.FramebufferHeight(), uint16(240); got != want {
+		t.Errorf("FramebufferHeight: got = %v, want = %v", got, want)
+	}
+	if got, want := conn.DesktopName(), name; got != want {
+		t.Errorf("DesktopName: got = %v, want = %v", got, want)
+	}
+}

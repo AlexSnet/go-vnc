@@ -12,7 +12,7 @@ No. of bytes    Type    [Value]         Description
 
 Currently the only defined versions are 0.1 and 0.2.
 NB ideally, servers should support all VeNCrypt versions up to and
-including this version, with the execption of protocol versions that
+including this version, with the exception of protocol versions that
 have been declared obsolete.
 
 The client then responds with two U8s (major followed by minor)
@@ -42,7 +42,7 @@ No. of bytes    Type    [Value]         Description
 
 Depending on the VeNCrypt version chosen and acknowledged by the server,
 communication continues at section 6.2.19.0.1 (VeNCrypt protocol 0.1) or
-6.2.19.0.2 (VeNCrypt protocol 0.1)
+6.2.19.0.2 (VeNCrypt protocol 0.2)
 
 
 RFB Protocol Section 6.2.19.0.1 - VeNCrypt protocol 0.1
@@ -115,7 +115,7 @@ The sub-types are as follows:
 Note on version 0.2 sub-types: Sub-types 1 to 255 are reserved for
 standard RFB types, should it be deemed useful to have them chosen at
 this point in the in the VeNCrypt protocol (choosing 19 at this point
-will never be be allowed since it causes looping).  Sub-types 256 to
+will never be allowed since it causes looping).  Sub-types 256 to
 2^31 - 1 (i.e. values with the most significant [sign] bit not set) are
 reserved as "official" future VeNCrypt sub-types, and may be requested
 from VeNCrypt in the same way that new RFB types may be requested from
@@ -220,4 +220,26 @@ RFB Protocol Section 6.2.19.262 - X509Plain VeNCrypt sub-type
 
 X509None authentication takes place, as described in section 6.2.19.260,
 followed by Plain authentication as described in section 6.2.19.256
+
+
+## Library notes
+
+This client implements VeNCrypt **0.2** only. If the server advertises 0.1 (or
+any other unsupported version), the client sends 0.0 and closes.
+
+Supported 0.2 sub-types, in preference order:
+
+- 261 X509Vnc
+- 258 TLSVnc
+- 260 X509None
+- 257 TLSNone
+
+Plain (256) and the TLSPlain/X509Plain variants are not implemented.
+
+After the client sends the chosen sub-type, this library expects a status
+byte used by common implementations (including noVNC): `1` means the
+sub-type was accepted, `0` means it was rejected. TLS then proceeds with
+`InsecureSkipVerify` enabled; X.509 and anonymous TLS are treated the same
+at the TLS layer.
+
 
